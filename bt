@@ -1,0 +1,96 @@
+#include <PS4Controller.h>
+
+// Cytron Motor Driver Pins for Left Side
+#define LEFT_DRIVER_PWM 25
+#define LEFT_DRIVER_DIR 26
+
+// Cytron Motor Driver Pins for Right Side
+#define RIGHT_DRIVER_PWM 27
+#define RIGHT_DRIVER_DIR 28
+
+// Function to map joystick input to PWM
+int mapJoystickToPWM(int input) {
+    return map(input, -100, 100, -255, 255);
+}
+
+// Function to calculate magnitude (distance formula)
+float calculateMagnitude(int x, int y) {
+    return sqrt(pow(x, 2) + pow(y, 2));
+}
+
+// Function to calculate the turn ratio
+float calculateTurnRatio(int x, float magnitude) {
+    return (magnitude > 0) ? (float)x / magnitude : 0;
+}
+
+// Function to set motor driver speed and direction
+void setMotorDriver(int pwmPin, int dirPin, int speed) {
+    if (speed > 0) {
+        digitalWrite(dirPin, HIGH);
+        analogWrite(pwmPin, speed);
+    } else if (speed < 0) {
+        digitalWrite(dirPin, LOW);
+        analogWrite(pwmPin, -speed);
+    } else {
+        analogWrite(pwmPin, 0);
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    // Initialize motor driver pins as outputs
+    pinMode(LEFT_DRIVER_PWM, OUTPUT);
+    pinMode(LEFT_DRIVER_DIR, OUTPUT);
+    pinMode(RIGHT_DRIVER_PWM, OUTPUT);
+    pinMode(RIGHT_DRIVER_DIR, OUTPUT);
+
+    // Connect to PS4 Controller
+    if (PS4.begin("xx:xx:xx:xx:xx:xx")) { // Replace xx:xx:xx:xx:xx:xx with your ESP32's Bluetooth MAC address
+        Serial.println("PS4 Controller connected!");
+    } else {
+        Serial.println("Failed to connect PS4 Controller!");
+    }
+}
+
+void loop() {
+    if (PS4.isConnected()) {
+        // Read joystick inputs
+        int X_input = PS4.LStickX();
+        int Y_input = PS4.LStickY();
+
+        // Map joystick inputs to range -100 to 100
+        Y_input = map(Y_input, -128, 127, -100, 100);
+        X_input = map(X_input, -128, 127, -100, 100);
+
+        // Calculate magnitude (distance formula)
+        float magnitude = calculateMagnitude(X_input, Y_input);
+        magnitude = constrain(magnitude, 0, 100); // Limit to max range
+
+        // Calculate turn ratio
+        float turnRatio = calculateTurnRatio(X_input, magnitude);
+
+        // Calculate motor speeds based on magnitude and turn ratio
+        float leftSpeed = magnitude * (1 - turnRatio);
+        float rightSpeed = magnitude * (1 + turnRatio);
+
+        // Normalize speeds if they exceed max speed
+        int maxSpeed = max(abs(leftSpeed), abs(rightSpeed));
+        if (maxSpeed > 100) {
+            leftSpeed = (leftSpeed * 100) / maxSpeed;
+            rightSpeed = (rightSpeed * 100) / maxSpeed;
+        }
+
+        // Convert speeds to PWM values
+        int pwmLeft = mapJoystickToPWM((int)leftSpeed);
+        int pwmRight = mapJoystickToPWM((int)rightSpeed);
+
+        // Set motor driver speeds and directions for both sides
+        setMotorDriver(LEFT_DRIVER_PWM, LEFT_DRIVER_DIR, pwmLeft);
+        setMotorDriver(RIGHT_DRIVER_PWM, RIGHT_DRIVER_DIR, pwmRight);
+    } else {
+        Serial.println("Controller disconnected!");
+    }
+
+    delay(20); // Small delay for stability
+}
