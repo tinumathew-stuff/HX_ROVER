@@ -1,0 +1,168 @@
+//joystick input in laptop
+
+import pygame
+import requests
+
+# ESP32 IP Address
+ESP32_IP = "192.168.x.x"  # Replace with your ESP32's IP address
+url = f"http://{ESP32_IP}/joystick"
+
+# Initialize Pygame for joystick input
+pygame.init()
+
+# Check for connected joysticks
+if pygame.joystick.get_count() == 0:
+    print("No joystick connected!")
+    exit()
+
+# Initialize the first joystick
+joystick = pygame.joystick.Joystick(0)
+joystick.init()
+print(f"Joystick connected: {joystick.get_name()}")
+
+while True:
+    # Process Pygame events
+    pygame.event.pump()
+
+    # Read joystick axes (assuming axis 0 = X and axis 1 = Y)
+    x_input = joystick.get_axis(0)  # X-axis
+    y_input = joystick.get_axis(1)  # Y-axis
+
+    # Map joystick input to range -100 to 100
+    x_mapped = int(x_input * 100)
+    y_mapped = int(-y_input * 100)  # Invert Y-axis if necessary
+
+    # Prepare data for ESP32
+    data = {
+        "x": x_mapped,
+        "y": y_mapped
+    }
+
+    # Send data to ESP32
+    try:
+        response = requests.post(url, json=data)
+        print(f"Sent: {data}, Response: {response.json()}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+    pygame.time.wait(100)  # Delay for stability
+-----------------------------------------------------------------------------------------------------
+//mc
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
+
+// Cytron Motor Driver Pins for Left Side
+#define LEFT_DRIVER_PWM 25
+#define LEFT_DRIVER_DIR 26
+
+// Cytron Motor Driver Pins for Right Side
+#define RIGHT_DRIVER_PWM 27
+#define RIGHT_DRIVER_DIR 28
+
+// Wi-Fi Credentials
+const char* ssid = "Your_Hotspot_Name";
+const char* password = "Your_Hotspot_Password";
+
+// Web Server on port 80
+WebServer server(80);
+
+// Function to map joystick input to PWM
+int mapJoystickToPWM(int input) {
+    return map(input, -100, 100, -255, 255);
+}
+
+// Function to calculate magnitude (distance formula)
+float calculateMagnitude(int x, int y) {
+    return sqrt(pow(x, 2) + pow(y, 2));
+}
+
+// Function to calculate the turn ratio
+float calculateTurnRatio(int x, float magnitude) {
+    return (magnitude > 0) ? (float)x / magnitude : 0;
+}
+
+// Function to set motor driver speed and direction
+void setMotorDriver(int pwmPin, int dirPin, int speed) {
+    if (speed > 0) {
+        digitalWrite(dirPin, HIGH);
+        analogWrite(pwmPin, speed);
+    } else if (speed < 0) {
+        digitalWrite(dirPin, LOW);
+        analogWrite(pwmPin, -speed);
+    } else {
+        analogWrite(pwmPin, 0);
+    }
+}
+
+// Function to handle incoming joystick data via WebServer
+void handleJoystickData() {
+    if (server.hasArg("plain")) {
+        String body = server.arg("plain");
+        StaticJsonDocument<200> doc;
+        deserializeJson(doc, body);
+
+        int X_input = doc["x"];
+        int Y_input = doc["y"];
+
+        // Calculate magnitude (distance formula)
+        float magnitude = calculateMagnitude(X_input, Y_input);
+        magnitude = constrain(magnitude, 0, 100); // Limit to max range
+
+        // Calculate turn ratio
+        float turnRatio = calculateTurnRatio(X_input, magnitude);
+
+        // Calculate motor speeds based on magnitude and turn ratio
+        float leftSpeed = magnitude * (1 - turnRatio);
+        float rightSpeed = magnitude * (1 + turnRatio);
+
+        // Normalize speeds if they exceed max speed
+        int maxSpeed = max(abs(leftSpeed), abs(rightSpeed));
+        if (maxSpeed > 100) {
+            leftSpeed = (leftSpeed * 100) / maxSpeed;
+            rightSpeed = (rightSpeed * 100) / maxSpeed;
+        }
+
+        // Convert speeds to PWM values
+        int pwmLeft = mapJoystickToPWM((int)leftSpeed);
+        int pwmRight = mapJoystickToPWM((int)rightSpeed);
+
+        // Set motor driver speeds and directions for both sides
+        setMotorDriver(LEFT_DRIVER_PWM, LEFT_DRIVER_DIR, pwmLeft);
+        setMotorDriver(RIGHT_DRIVER_PWM, RIGHT_DRIVER_DIR, pwmRight);
+
+        // Send response
+        server.send(200, "application/json", "{\"status\":\"OK\"}");
+    } else {
+        server.send(400, "application/json", "{\"error\":\"Invalid data\"}");
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    // Initialize motor driver pins as outputs
+    pinMode(LEFT_DRIVER_PWM, OUTPUT);
+    pinMode(LEFT_DRIVER_DIR, OUTPUT);
+    pinMode(RIGHT_DRIVER_PWM, OUTPUT);
+    pinMode(RIGHT_DRIVER_DIR, OUTPUT);
+
+    // Connect to Wi-Fi
+    WiFi.begin(ssid, password);
+    Serial.print("Connecting to Wi-Fi");
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("Connected!");
+
+    // Start server and set up route
+    server.on("/joystick", HTTP_POST, handleJoystickData);
+    server.begin();
+    Serial.println("Server started!");
+}
+
+void loop() {
+    // Handle incoming HTTP requests
+    server.handleClient();
+}
